@@ -1,0 +1,3 @@
+[dirs]
+gameserver = C:\Users\win8t\OneDrive\Desktop\projects\LeagueSandbox-RL-Learning\GameServerConsole\bin\Debug\netcoreapp3.0\
+lolclient = C:\Users\win8t\OneDrive\Desktop\projects\lolrle\League-of-Legends-4-20\RADS\solutions\lol_game_client_sln\releases\0.0.1.68\deploy\
