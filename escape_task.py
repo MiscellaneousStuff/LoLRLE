@@ -18,6 +18,9 @@ _SPELL = [actions.FUNCTIONS.spell.id]
 import gym
 from gym.spaces import Box, Tuple, Discrete, Dict, MultiDiscrete
 
+from dotenv import dotenv_values
+import neptune.new as neptune
+
 from absl import flags
 from absl import app
 
@@ -28,6 +31,16 @@ flags.DEFINE_integer("epochs", 50, "Number of episodes to run the experiment for
 flags.DEFINE_float("step_multiplier", 1.0, "Run game server x times faster than real-time")
 flags.DEFINE_bool("run_client", False, "Controls whether the game client is run or not")
 flags.DEFINE_integer("max_steps", 25, "Maximum number of steps per episode")
+
+# (Optional) Initialises Neptune.ai logging
+log = False
+config = dotenv_values(".env")
+if "NEPTUNE_PROJECT" in config and "NEPTUNE_TOKEN" in config:
+    if config["NEPTUNE_PROJECT"] and config["NEPTUNE_TOKEN"]:
+        run = neptune.init(
+            project=config["NEPTUNE_PROJECT"],
+            api_token=config["NEPTUNE_TOKEN"])
+        log = True
 
 # Use GPU if available
 if (torch.cuda.is_available()):
@@ -80,6 +93,15 @@ class ActorCritic(nn.Module):
 
         action = dist.sample()
         action_logprob = dist.log_prob(action)
+
+        action = action.detach()
+        action_logprob = action_logprob.detach()
+
+        if log:
+            if action == 0:
+                run['action_left_logprob'].log(action_logprob)
+            else:
+                run['action_right_logprob'].log(action_logprob)
 
         return action.detach(), action_logprob.detach()
 
@@ -144,7 +166,6 @@ class PPO(object):
         old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(device)
 
         old_states = torch.unsqueeze(old_states, 1)
-
         print('[UPDATE] old_states:', old_states, old_states.shape)
 
         # Optimize policy for K epochs
@@ -165,6 +186,11 @@ class PPO(object):
 
             # Final loss of clipped objective PPO
             loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rews) - 0.01 * dist_entropy
+
+            """
+            if log:
+                run["policy_loss"].log(loss)
+            """
 
             # Take gradient step
             self.optimizer.zero_grad()
@@ -214,9 +240,11 @@ def test(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic, mod
     agent = PPO(obs_space, act_space, lr_actor, lr_critic, gamma, K_epochs, eps_clip)
 
     # Load pre-trained model
-    ppo_agent.load(model_path)
+    agent.load(model_path)
 
-    for epoch in epochs:
+    total_steps = 0
+
+    for epoch in range(epochs):
         obs = env.reset()
         
         env.teleport(1, point.Point(7100.0, 7000.0))
@@ -225,16 +253,17 @@ def test(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic, mod
         raw_obs = obs
         obs = np.array(raw_obs[0].observation["enemy_unit"].distance_to_me)[None]
 
+        rews = []
+        steps = 0
+
         while True:
             steps += 1
             total_steps += 1
 
-            print(f'obs: {epoch}, step: {steps}')
-
             # Select action with policy
             act = agent.act(obs[None]) # NOTE: arr[None] wraps arr in another [] 
             act = convert_action(raw_obs, act)
-            obs, rews, done, _ = env.step(act)
+            obs, rew, done, _ = env.step(act)
             raw_obs = obs
             obs = np.array(raw_obs[0].observation["enemy_unit"].distance_to_me)[None]
 
@@ -243,15 +272,6 @@ def test(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic, mod
             rew = +(raw_obs[0].observation["enemy_unit"].distance_to_me / 1000.0)
             rews.append(rew)
 
-            # Saving reward and is_terminals
-            agent.buffer.rewards.append(rew)
-            agent.buffer.is_terminals.append(done[0])
-
-            # Update PPO agent
-            if total_steps % update_step == 0:
-                agent.update()
-                agent.save(checkpoint_path)
-
             # Break if episode is over
             if any(done) or steps == max_steps:
                 # Announce episode number and rew
@@ -259,6 +279,8 @@ def test(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic, mod
 
                 # Break
                 break
+
+        rews = []
 
     # Close environment
     env.close()
@@ -277,8 +299,10 @@ def train(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic):
     # Initialize actor-critic agent
     eps_clip = 0.2
     gamma = 0.99
-    K_epochs = 1 # Originaly 80
+    K_epochs = 80 # K_epochs = 1 # Originaly 80
     agent = PPO(obs_space, act_space, lr_actor, lr_critic, gamma, K_epochs, eps_clip)
+
+    run["K_epochs"] = K_epochs
 
     # Training process
     update_step = max_steps * 1
@@ -318,7 +342,7 @@ def train(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic):
             # Select action with policy
             act = agent.act(obs[None]) # NOTE: arr[None] wraps arr in another [] 
             act = convert_action(raw_obs, act)
-            obs, rews, done, _ = env.step(act)
+            obs, rew, done, _ = env.step(act)
             raw_obs = obs
             obs = np.array(raw_obs[0].observation["enemy_unit"].distance_to_me)[None]
 
@@ -341,8 +365,13 @@ def train(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic):
                 # Announce episode number and rew
                 env.broadcast_msg(f"episode No: {epoch}, rew: {sum(rews)}")
 
+                if log:
+                    run["reward"].log(sum(rews))
+
                 # Break
                 break
+
+        rews = []
 
     # Close environment
     env.close()
@@ -351,13 +380,24 @@ def main(unused_argv):
     obs_space = Box(low=0, high=24000, shape=(1,), dtype=np.float32)
     act_space = Discrete(2)
     
-    lr_actor  = 0.0003
-    lr_critic = 0.001
+    # lr_actor  = 0.0003
+    lr_actor  = 0.003
+
+    #lr_critic = 0.001
+    lr_critic = 0.01
+
+    if log:
+        run["lr_actor"] = lr_actor
+        run["lr_critic"] = lr_critic
 
     host = FLAGS.host
     epochs = FLAGS.epochs
     max_steps = FLAGS.max_steps
+
+    # Checkpoint
     train(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic)
+    # checkpoint_path = "PPO_LoLGame-v0_0_200epochs.pth"
+    # test(host, epochs, max_steps, obs_space, act_space, lr_actor, lr_critic, checkpoint_path)
 
 def entry_point():
     app.run(main)

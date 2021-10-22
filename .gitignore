@@ -139,3 +139,5 @@ cython_debug/
 
 # League of Legends client directory
 League-of-Legends-4-20/
+
+.neptune/
