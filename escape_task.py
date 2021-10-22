@@ -74,15 +74,11 @@ class ActorCritic(nn.Module):
         self.actor = nn.Sequential(
             nn.Linear(state_dim.shape[0], 1),
             nn.Tanh(),
-            nn.Linear(1, 1),
-            nn.Tanh(),
             nn.Linear(1, action_dim.n),
-            nn.Softmax(dim=-1)
+            nn.Softmax(dim=-1)            
         )
         self.critic = nn.Sequential(
             nn.Linear(state_dim.shape[0], 1),
-            nn.Tanh(),
-            nn.Linear(1, 1),
             nn.Tanh(),
             nn.Linear(1, 1)
         )
