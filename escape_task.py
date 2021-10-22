@@ -67,7 +67,6 @@ class RolloutBuffer(object):
         del self.rewards[:]
         del self.is_terminals[:]
 
-
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(ActorCritic, self).__init__()
@@ -75,7 +74,7 @@ class ActorCritic(nn.Module):
             nn.Linear(state_dim.shape[0], 1),
             nn.Tanh(),
             nn.Linear(1, action_dim.n),
-            nn.Softmax(dim=-1)            
+            nn.Softmax(dim=-1)
         )
         self.critic = nn.Sequential(
             nn.Linear(state_dim.shape[0], 1),
@@ -183,10 +182,8 @@ class PPO(object):
             # Final loss of clipped objective PPO
             loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rews) - 0.01 * dist_entropy
 
-            """
             if log:
-                run["policy_loss"].log(loss)
-            """
+                run["policy_loss"].log(loss.mean())
 
             # Take gradient step
             self.optimizer.zero_grad()
